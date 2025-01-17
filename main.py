@@ -1,342 +1,214 @@
-import simpy
 import random
-import statistics
 import numpy as np
+import pandas as pd
 
-import tkinter as tk
-from tkinter import ttk
-
-##############################################################################
-# 1) GLOBAL STRUCTURES FOR COLLECTING SNAPSHOTS
-##############################################################################
-animation_data = []  # Will hold a list of snapshots
-
-# For demonstration, track how many cars in queue & crossing
-queue_counts = {
-    'Bakeri1': 0,
-    'Bakeri2': 0,
-    'Besat1':  0,
-    'Besat2':  0
-}
-current_crossings = {
-    'Bakeri1': 0,
-    'Bakeri2': 0,
-    'Besat1':  0,
-    'Besat2':  0
-}
-
-##############################################################################
-# 2) DISTRIBUTIONS FOR ARRIVAL AND CROSSING TIMES
-##############################################################################
-def arrival_time_bakeri1():
-    val = -0.5 + 22 * np.random.beta(a=0.971, b=2.04)
-    return max(val, 0.0)
-
-def arrival_time_bakeri2():
-    val = -0.5 + 41 * np.random.beta(a=0.968, b=3.44)
-    return max(val, 0.0)
-
-def arrival_time_besat1():
-    val = -0.5 + 23 * np.random.beta(a=0.634, b=1.61)
-    return max(val, 0.0)
-
-def arrival_time_besat2():
-    val = -0.5 + 24 * np.random.beta(a=0.963, b=1.99)
-    return max(val, 0.0)
-
-def crossing_time_bakeri1():
-    return np.random.poisson(lam=8.21)
-
-def crossing_time_bakeri2():
-    # Normal can be negative; clip it
-    val = np.random.normal(loc=5.66, scale=2.08)
-    return max(val, 0.0)
-
-def crossing_time_besat1():
-    return 2.5 + np.random.lognormal(mean=7.65, sigma=6.42)
-
-def crossing_time_besat2():
-    return 2.5 + np.random.gamma(shape=3, scale=2.82)
-
-##############################################################################
-# ROW-BASED DELAYS (TABLE 2)
-##############################################################################
-row_times = {
+# Constants
+ROW_TIMES = {
     'Bakeri1': 2.675,
     'Bakeri2': 2.4666,
-    'Besat1':  2.6818,
-    'Besat2':  2.3243
+    'Besat1': 2.6818,
+    'Besat2': 2.3243,
 }
 
-##############################################################################
-# 3) SIMPY PROCESSES
-##############################################################################
-def vehicle_generator(env, street_name, arrival_func, cross_func,
-                      light_state, results):
-    i = 0
+VEHICLE_PROBABILITIES = {
+    'Bakeri1': [0.06, 0.82, 0.08, 0.04],
+    'Bakeri2': [0.04, 0.75, 0.14, 0.07],
+    'Besat1': [0.05, 0.80, 0.10, 0.05],
+    'Besat2': [0.07, 0.77, 0.09, 0.07],
+}
+
+DIRECTION_PROBABILITIES = {
+    'Bakeri1': {'left': 0.4, 'straight': 0.5, 'right': 0.1},
+    'Bakeri2': {'left': 0.33, 'straight': 0.57, 'right': 0.1},
+    'Besat1': {'left': 0.2, 'straight': 0.7, 'right': 0.1},
+    'Besat2': {'left': 0.23, 'straight': 0.67, 'right': 0.1},
+}
+
+LIGHT_TIMES = {
+    3: {'green': {'Bakeri1': 40, 'Bakeri2': 30, 'Besat1': 25, 'Besat2': 25},
+        'red': {'Bakeri1': 80, 'Bakeri2': 90, 'Besat1': 95, 'Besat2': 95}},
+    4: {'green': {'Bakeri1': 40, 'Bakeri2': 35, 'Besat1': 30, 'Besat2': 25},
+        'red': {'Bakeri1': 90, 'Bakeri2': 95, 'Besat1': 100, 'Besat2': 105}},
+    7: {'green': {'Bakeri1': 30, 'Bakeri2': 25, 'Besat1': 30, 'Besat2': 30},
+        'red': {'Bakeri1': 85, 'Bakeri2': 90, 'Besat1': 85, 'Besat2': 85}},
+}
+
+CROSSING_DISTRIBUTIONS = {
+    'Bakeri1': lambda: np.random.poisson(8.21),
+    'Bakeri2': lambda: np.random.normal(5.66, 2.08),
+    'Besat1': lambda: min(10, 2.5 + np.random.lognormal(7.65, 6.42)),
+    'Besat2': lambda:  2.5 + np.random.exponential(2.82),
+}
+
+# Vehicle type scaling factors
+TIME_MODIFIERS = {
+    'Bus': {'row_time': 1.5, 'crossing_time': 1.8},
+    'Car': {'row_time': 1.0, 'crossing_time': 1.0},
+    'Van': {'row_time': 1.2, 'crossing_time': 1.2},
+    'Pickup': {'row_time': 1.1, 'crossing_time': 1.1},
+}
+
+# Helper Functions
+def calculate_row_time(street, row_index):
+    return (row_index - 1) * ROW_TIMES[street]
+
+def simulate_vehicle_cycle_time(street, light_times, row_time, crossing_time, direction, sched_value, lane, light_phase, row_index, vehicle_type):
+    waiting_time = 0
+    encountered_red_light = False
+
+    # Apply vehicle type modifiers
+    row_time *= TIME_MODIFIERS[vehicle_type]['row_time']
+    crossing_time *= TIME_MODIFIERS[vehicle_type]['crossing_time']
+
+    print(f"\n--- Starting Simulation ---")
+    print(f"Street: {street}")
+    print(f"Lane: {lane}, Row Index: {row_index}")
+    print(f"Direction: {direction}")
+    print(f"Vehicle Type: {vehicle_type}")
+    print(f"Initial Light Phase: {'Green' if light_phase else 'Red'}")
+    print(f"Time to Reach Frontline of Intersection: {row_time:.3f} seconds")
+    print(f"Crossing Time Required: {crossing_time:.2f} seconds\n")
+
     while True:
-        yield env.timeout(arrival_func())
-        i += 1
-        queue_counts[street_name] += 1
-        vid = f"{street_name}-{i}"
-        env.process(vehicle(env, vid, street_name, cross_func,
-                            light_state, results))
+        # Determine action based on lane, direction, and light phase
+        if lane == 3 and direction == 'right':
+            action = 'cross_intersection'  # Lane 3 vehicles turning right can always cross
+        elif lane == 1 and direction == 'left':
+            if light_phase:
+                action = 'cross_intersection'  # Cross directly if light is green
+            else:
+                action = 'back_then_cross'  # Wait for red light, then cross
+        elif lane == 1 and direction == 'straight':
+            if light_phase:
+                action = 'move_to_lane2_then_cross'  # Move to lane 2, then cross
+            else:
+                action = 'back_then_move_to_lane2_then_cross'  # Wait for red light, move to lane 2, then cross
+        elif lane == 2 and direction == 'straight':
+            if light_phase:
+                action = 'cross_intersection'  # Cross directly if light is green
+            else:
+                action = 'back_then_cross'  # Wait for red light, then cross
+        elif lane == 2 and direction == 'left':
+            if light_phase:
+                action = 'move_to_lane1_then_cross'  # Move to lane 1, then cross
+            else:
+                action = 'back_then_move_to_lane1_then_cross'  # Wait for red light, move to lane 1, then cross
+        else:
+            action = 'unspecified'  # Unexpected condition
 
-def vehicle(env, vid, street_name, cross_func, light_state, results):
-    # row-based waiting
-    position_in_queue = queue_counts[street_name]
-    delay_to_front = (position_in_queue - 1) * row_times[street_name]
+        # Handle actions and print details
+        if action == 'cross_intersection':
+            print(f"Action: cross_intersection. Vehicle crosses the intersection.")
+            break
+        elif action == 'move_to_lane2_then_cross':
+            print("Action: move_to_lane2_then_cross. Vehicle moves to lane 2, then crosses the intersection.")
+            break
+        elif action == 'move_to_lane1_then_cross':
+            print("Action: move_to_lane1_then_cross. Vehicle moves to lane 1, then crosses the intersection.")
+            break
+        elif action == 'back_then_cross':
+            # Calculate a random waiting time during red light
+            dynamic_red_light_wait = random.uniform(0, light_times['red'][street])
+            print(f"Action: back_then_cross. Vehicle waits at the red light for {dynamic_red_light_wait:.2f} seconds, then crosses the intersection.")
+            waiting_time += dynamic_red_light_wait
+            light_phase = True  # Light turns green after red
+        elif action == 'back_then_move_to_lane2_then_cross':
+            dynamic_red_light_wait = random.uniform(0, light_times['red'][street])
+            print(f"Action: back_then_move_to_lane2_then_cross. Vehicle waits at the red light for {dynamic_red_light_wait:.2f} seconds, then moves to lane 2 and crosses the intersection.")
+            waiting_time += dynamic_red_light_wait
+            light_phase = True
+        elif action == 'back_then_move_to_lane1_then_cross':
+            dynamic_red_light_wait = random.uniform(0, light_times['red'][street])
+            print(f"Action: back_then_move_to_lane1_then_cross. Vehicle waits at the red light for {dynamic_red_light_wait:.2f} seconds, then moves to lane 1 and crosses the intersection.")
+            waiting_time += dynamic_red_light_wait
+            light_phase = True
+        else:
+            print("Action: unspecified. Vehicle remains stationary due to an unexpected condition.")
+            break
 
-    t0 = env.now
-    yield env.timeout(delay_to_front)
+    # Add the time it took to reach the frontline
+    waiting_time += row_time
 
-    direction = random.choice(["left","straight","right"])
-    if direction == 'right':
-        current_crossings[street_name] += 1
-        yield env.timeout(0.5 * cross_func())
-        current_crossings[street_name] -= 1
-    else:
-        while True:
-            if street_name == 'Bakeri1' and light_state['bakeri1']:
-                break
-            elif street_name == 'Bakeri2' and light_state['bakeri2']:
-                break
-            elif street_name == 'Besat1' and light_state['besat1']:
-                break
-            elif street_name == 'Besat2' and light_state['besat2']:
-                break
-            yield env.timeout(0.5)
-        current_crossings[street_name] += 1
-        yield env.timeout(cross_func())
-        current_crossings[street_name] -= 1
+    # Calculate the total time spent by the vehicle
+    total_cycle_time = waiting_time + crossing_time
 
-    total_time = env.now - t0
-    results.append(total_time)
-    queue_counts[street_name] -= 1
+    # Print the final summary for this vehicle
+    print("\n--- Final Summary for Vehicle ---")
+    print(f"Total Time Spent by Vehicle: {total_cycle_time:.2f} seconds")
+    print(f"  - Time to Reach Frontline: {row_time:.3f} seconds")
+    print(f"  - Waiting at Red Light: {waiting_time - row_time:.2f} seconds")
+    print(f"  - Crossing Time: {crossing_time:.2f} seconds")
+    print(f"------------------------------------------\n")
 
-def traffic_light_controller_4stroke(env, light_state,
-                                     green_b1, green_b2,
-                                     green_s1, green_s2,
-                                     yellow=0):
-    while True:
-        # PHASE 1
-        light_state['bakeri1'] = True
-        light_state['bakeri2'] = False
-        light_state['besat1']  = False
-        light_state['besat2']  = False
-        yield env.timeout(green_b1)
-        if yellow > 0:
-            light_state['bakeri1'] = False
-            yield env.timeout(yellow)
+    return total_cycle_time
 
-        # PHASE 2
-        light_state['bakeri1'] = False
-        light_state['bakeri2'] = True
-        light_state['besat1']  = False
-        light_state['besat2']  = False
-        yield env.timeout(green_b2)
-        if yellow > 0:
-            light_state['bakeri2'] = False
-            yield env.timeout(yellow)
+def run_simulation(street, light_times, num_iterations, starting_light_phase, max_rows=5):
+    cycle_times = []
+    light_phase = starting_light_phase
+    lane_queues = {'lane1': 0, 'lane2': 0, 'lane3': 0}  # Queue for each lane
 
-        # PHASE 3
-        light_state['bakeri1'] = False
-        light_state['bakeri2'] = False
-        light_state['besat1']  = True
-        light_state['besat2']  = False
-        yield env.timeout(green_s1)
-        if yellow > 0:
-            light_state['besat1'] = False
-            yield env.timeout(yellow)
+    for i in range(num_iterations):
+        # Determine vehicle type
+        vehicle_type = random.choices(['Bus', 'Car', 'Van', 'Pickup'], weights=VEHICLE_PROBABILITIES[street])[0]
+        # Determine direction
+        direction = random.choices(['left', 'straight', 'right'], weights=[
+            DIRECTION_PROBABILITIES[street]['left'], 
+            DIRECTION_PROBABILITIES[street]['straight'], 
+            DIRECTION_PROBABILITIES[street]['right']
+        ])[0]
 
-        # PHASE 4
-        light_state['bakeri1'] = False
-        light_state['bakeri2'] = False
-        light_state['besat1']  = False
-        light_state['besat2']  = True
-        yield env.timeout(green_s2)
-        if yellow > 0:
-            light_state['besat2'] = False
-            yield env.timeout(yellow)
+        # Assign lane based on direction
+        lane = 3 if direction == 'right' else (1 if lane_queues['lane1'] <= lane_queues['lane2'] else 2)
+        row_index = lane_queues[f'lane{lane}'] + 1  # Increment row index based on current queue
+        lane_queues[f'lane{lane}'] += 1  # Increment the queue size for the lane
 
-##############################################################################
-# 4) CAPTURE “SNAPSHOTS” EVERY 1s FOR LATER PLAYBACK
-##############################################################################
-def record_state(env, light_state, interval=1.0):
-    """Every 'interval' seconds, append a snapshot to 'animation_data'."""
-    while True:
-        snap = {
-            'time':    env.now,
-            'lights':  dict(light_state),
-            'queues':  dict(queue_counts),
-            'crossing':dict(current_crossings)
-        }
-        animation_data.append(snap)
-        yield env.timeout(interval)
+        # Calculate times
+        row_time = calculate_row_time(street, row_index)
+        crossing_time = CROSSING_DISTRIBUTIONS[street]()
+        sched_value = random.randint(0, 1)
 
-##############################################################################
-# 5) RUN THE SIMULATION OFFLINE, STORE SNAPSHOTS
-##############################################################################
-def run_scenario(green_times, sim_duration=1200, seed=42):
-    animation_data.clear()
+        print(f"Iteration: {i}, Vehicle: {vehicle_type}")
 
-    # reset global counters for each run
-    for k in queue_counts:
-        queue_counts[k] = 0
-    for k in current_crossings:
-        current_crossings[k] = 0
+        # Simulate vehicle cycle time
+        cycle_time = simulate_vehicle_cycle_time(
+            street, light_times, row_time, crossing_time, direction, sched_value, lane, light_phase, row_index, vehicle_type
+        )
+        cycle_times.append(cycle_time)
 
-    random.seed(seed)
-    np.random.seed(seed)
+        # Update light phase (toggle green/red)
+        light_phase = not light_phase
 
-    env = simpy.Environment()
-    light_state = {
-        'bakeri1': False,
-        'bakeri2': False,
-        'besat1':  False,
-        'besat2':  False
+    return np.mean(cycle_times)
+
+def main():
+    scenarios = [3, 4, 7]
+    streets = ['Bakeri1', 'Bakeri2', 'Besat1', 'Besat2']
+    results = pd.DataFrame(columns=streets)
+
+    total_iterations_per_scenario = 50
+    num_iterations_per_street = total_iterations_per_scenario 
+
+    starting_light_phases = {
+        'Bakeri1': True,
+        'Bakeri2': True,
+        'Besat1': False,
+        'Besat2': True,
     }
 
-    g_b1, g_b2, g_s1, g_s2 = green_times
-    env.process(traffic_light_controller_4stroke(env, light_state,
-                                                 g_b1, g_b2, g_s1, g_s2))
-    results_bakeri1 = []
-    results_bakeri2 = []
-    results_besat1  = []
-    results_besat2  = []
+    for scenario in scenarios:
+        print(f"\nRunning Scenario {scenario}")
+        light_times = LIGHT_TIMES[scenario]
+        row = {}
+        for street in streets:
+            avg_cycle_time = run_simulation(
+                street, light_times, num_iterations=num_iterations_per_street, 
+                starting_light_phase=starting_light_phases[street], max_rows=5
+            )
+            row[street] = avg_cycle_time
+        results.loc[scenario] = row
 
-    env.process(vehicle_generator(env, 'Bakeri1', arrival_time_bakeri1,
-                                  crossing_time_bakeri1, light_state, results_bakeri1))
-    env.process(vehicle_generator(env, 'Bakeri2', arrival_time_bakeri2,
-                                  crossing_time_bakeri2, light_state, results_bakeri2))
-    env.process(vehicle_generator(env, 'Besat1', arrival_time_besat1,
-                                  crossing_time_besat1, light_state, results_besat1))
-    env.process(vehicle_generator(env, 'Besat2', arrival_time_besat2,
-                                  crossing_time_besat2, light_state, results_besat2))
+    print("\nTraffic Simulation Results")
+    print(results)
 
-    # Record snapshots every 1 second
-    env.process(record_state(env, light_state, interval=1.0))
-
-    env.run(until=sim_duration)
-
-    def avg_or_zero(lst):
-        return statistics.mean(lst) if lst else 0.0
-
-    return (avg_or_zero(results_bakeri1),
-            avg_or_zero(results_bakeri2),
-            avg_or_zero(results_besat1),
-            avg_or_zero(results_besat2))
-
-##############################################################################
-# 6) TKINTER GUI FOR “PLAYBACK” OF THE STORED SNAPSHOTS
-##############################################################################
-class TrafficSimGUI:
-    def __init__(self, master):
-        self.master = master
-        self.master.title("Intersection Simulation")
-
-        self.frame = ttk.Frame(self.master, padding=10)
-        self.frame.pack(fill=tk.BOTH, expand=True)
-
-        # We have 4 streets: show lights, queue length, crossing
-        self.lights_labels   = {}
-        self.queues_labels   = {}
-        self.crossing_labels = {}
-
-        # Streets in a consistent order
-        self.streets = ['Bakeri1', 'Bakeri2', 'Besat1', 'Besat2']
-
-        row_idx = 0
-        header = ttk.Label(self.frame, text="Traffic Light Simulation", font=("Arial", 14, "bold"))
-        header.grid(row=row_idx, column=0, columnspan=3, pady=(0,10))
-        row_idx += 1
-
-        # Table header
-        ttk.Label(self.frame, text="Street",  width=10, anchor="center").grid(row=row_idx, column=0, padx=5)
-        ttk.Label(self.frame, text="Light",   width=10, anchor="center").grid(row=row_idx, column=1, padx=5)
-        ttk.Label(self.frame, text="Queue",   width=10, anchor="center").grid(row=row_idx, column=2, padx=5)
-        ttk.Label(self.frame, text="Crossing",width=10, anchor="center").grid(row=row_idx, column=3, padx=5)
-        row_idx += 1
-
-        for st in self.streets:
-            ttk.Label(self.frame, text=st, width=10).grid(row=row_idx, column=0)
-            lbl_light = ttk.Label(self.frame, text="RED", width=10, anchor="center", foreground="red")
-            lbl_light.grid(row=row_idx, column=1)
-            lbl_queue = ttk.Label(self.frame, text="0", width=10, anchor="center")
-            lbl_queue.grid(row=row_idx, column=2)
-            lbl_cross = ttk.Label(self.frame, text="0", width=10, anchor="center")
-            lbl_cross.grid(row=row_idx, column=3)
-
-            self.lights_labels[st]   = lbl_light
-            self.queues_labels[st]   = lbl_queue
-            self.crossing_labels[st] = lbl_cross
-
-            row_idx += 1
-
-        # Time label
-        self.time_label = ttk.Label(self.frame, text="Time = 0.0 s", font=("Arial", 12))
-        self.time_label.grid(row=row_idx, column=0, columnspan=4, pady=(10,0))
-
-        # Start with frame=0
-        self.current_frame = 0
-
-    def update_display(self, snapshot):
-        """Use 'snapshot' to update the labels in the GUI."""
-        sim_time = snapshot['time']
-        lights   = snapshot['lights']
-        queues   = snapshot['queues']
-        crossing = snapshot['crossing']
-
-        self.time_label.config(text=f"Time = {sim_time:.1f} s")
-
-        for st in self.streets:
-            # Light color
-            if lights[st.lower()]:  # dictionary keys are 'bakeri1' in lowercase
-                self.lights_labels[st].config(text="GREEN", foreground="green")
-            else:
-                self.lights_labels[st].config(text="RED", foreground="red")
-
-            # Queue
-            qval = queues[st]
-            self.queues_labels[st].config(text=str(qval))
-
-            # Crossing
-            cval = crossing[st]
-            self.crossing_labels[st].config(text=str(cval))
-
-    def play_snapshots(self):
-        """Called repeatedly with 'after' to advance frames slowly."""
-        if self.current_frame >= len(animation_data):
-            # Done with playback
-            return
-
-        snap = animation_data[self.current_frame]
-        self.update_display(snap)
-        self.current_frame += 1
-
-        # Wait 500 ms (0.5 s) before showing the next frame
-        self.master.after(500, self.play_snapshots)
-
-##############################################################################
-# 7) MAIN DEMO
-##############################################################################
-if __name__ == '__main__':
-    # 1) Run the simulation "offline" to gather snapshots
-    # Example green times: (30, 25, 30, 30)
-    r_b1, r_b2, r_s1, r_s2 = run_scenario((30, 25, 30, 30), sim_duration=60, seed=42)
-    overall_avg = statistics.mean([r_b1, r_b2, r_s1, r_s2])
-    print("Simulation finished.")
-    print(f"  Bakeri1 avg time = {r_b1:.2f}")
-    print(f"  Bakeri2 avg time = {r_b2:.2f}")
-    print(f"  Besat1  avg time = {r_s1:.2f}")
-    print(f"  Besat2  avg time = {r_s2:.2f}")
-    print(f"  Overall avg time = {overall_avg:.2f}\n")
-
-    # 2) Then create a Tkinter GUI to “play back” the stored snapshots slowly
-    root = tk.Tk()
-    gui = TrafficSimGUI(root)
-
-    # Start the animation
-    gui.play_snapshots()
-
-    root.mainloop()
+if __name__ == "__main__":
+    main()
