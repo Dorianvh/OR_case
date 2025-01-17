@@ -55,6 +55,7 @@ def calculate_row_time(street, row_index):
 def simulate_vehicle_cycle_time(street, light_times, row_time, crossing_time, direction, sched_value, lane, light_phase, row_index, vehicle_type):
     waiting_time = 0
     encountered_red_light = False
+    
 
     # Apply vehicle type modifiers
     row_time *= TIME_MODIFIERS[vehicle_type]['row_time']
