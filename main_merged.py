@@ -1,10 +1,11 @@
+# Full simulation code (same as before with corrected `vehicle_cross`)
 import simpy
 import random
 import numpy as np
 import pandas as pd
 
-# random.seed(1024)
-# np.random.seed(1832)
+random.seed(1024)
+np.random.seed(1832)
 
 # Constants
 ROW_TIMES = {
@@ -49,7 +50,6 @@ TIME_MODIFIERS = {
     'Pickup': {'row_time': 1.1, 'crossing_time': 1.1},
 }
 
-# Simulation Class
 class IntersectionSimulation:
     def __init__(self, env, light_times, arrival_distributions):
         self.env = env
@@ -65,7 +65,6 @@ class IntersectionSimulation:
             self.env.process(self.vehicle_arrival(street))
 
     def traffic_light_cycle(self):
-        """Controls the traffic light system."""
         cycle_order = [(street, self.light_times['green'][street]) for street in self.light_times['green']]
         while True:
             for street, green_time in cycle_order:
@@ -74,67 +73,105 @@ class IntersectionSimulation:
                 self.light_state[street] = False
 
     def vehicle_arrival(self, street):
-        """Simulates vehicle arrivals at the intersection."""
         while True:
             inter_arrival_time = self.arrival_distributions[street]()
             yield self.env.timeout(inter_arrival_time)
             self.vehicle_count += 1
             vehicle_id = self.vehicle_count
 
-            # Randomly assign vehicle direction
             direction = random.choices(['left', 'straight', 'right'], weights=[
                 DIRECTION_PROBABILITIES[street]['left'],
                 DIRECTION_PROBABILITIES[street]['straight'],
                 DIRECTION_PROBABILITIES[street]['right']
             ])[0]
 
-            # Randomly assign vehicle type
             vehicle_type = random.choices(['Bus', 'Car', 'Van', 'Pickup'], weights=VEHICLE_PROBABILITIES[street])[0]
 
-            # Assign to the shortest queue (1 or 2) if going left or straight
             if direction in ["left", "straight"]:
                 queue_num = 1 if len(self.queues[street][1]) <= len(self.queues[street][2]) else 2
             else:
-                queue_num = 3  # Right-turning vehicles always go to queue 3
+                queue_num = 3
 
             self.env.process(self.vehicle_cross(street, vehicle_id, direction, queue_num, vehicle_type))
 
     def vehicle_cross(self, street, vehicle_id, direction, queue_num, vehicle_type):
         """Simulates a vehicle crossing the intersection."""
         arrival_time = self.env.now
-        queue_position = len(self.queues[street][queue_num])
-        row_wait_time = max(0, (queue_position - 1) * ROW_TIMES[street] * TIME_MODIFIERS[vehicle_type]['row_time'])
+        queue_position = len(self.queues[street][queue_num])  # Vehicle's position in the queue
+        row_index = queue_position + 1  # Row index is 1-based
+        row_wait_time = (row_index - 1) * ROW_TIMES[street] * TIME_MODIFIERS[vehicle_type]['row_time']
+
+        # Add the vehicle to the queue
         self.queues[street][queue_num].append(vehicle_id)
-        yield self.env.timeout(row_wait_time)
+        yield self.env.timeout(row_wait_time)  # Wait time to move to the frontline
 
         # Wait for green light if not turning right
+        red_light_wait_time = 0
         if direction != 'right':
             while not self.light_state[street]:
                 yield self.env.timeout(1)
+                red_light_wait_time += 1
 
-        crossing_time = CROSSING_DISTRIBUTIONS[street]() * TIME_MODIFIERS[vehicle_type]['crossing_time']  # Adjust crossing time
+        # Calculate crossing time (once)
+        crossing_time = CROSSING_DISTRIBUTIONS[street]() * TIME_MODIFIERS[vehicle_type]['crossing_time']
         yield self.env.timeout(crossing_time)
+
+        # Remove the vehicle from the queue
         self.queues[street][queue_num].remove(vehicle_id)
-        cycle_time = self.env.now - arrival_time
-        self.results[street].append(cycle_time)
+        total_time_spent = self.env.now - arrival_time
+
+
+
+        # Record the total time spent for statistics
+        self.results[street].append(total_time_spent)
+
+        # Log details for this vehicle
+        print(f"\n--- Vehicle {vehicle_id} Simulation ---")
+        print(f"Street: {street}")
+        print(f"Lane: {queue_num}, Row Index: {row_index}")
+        print(f"Direction: {direction}")
+        print(f"Vehicle Type: {vehicle_type}")
+        print(f"Row Wait Time: {row_wait_time:.2f} seconds")
+        print(f"Red Light Wait Time: {red_light_wait_time:.2f} seconds")
+        print(f"Crossing Time: {crossing_time:.2f} seconds")
+        print(f"\n--- Final Summary for Vehicle {vehicle_id} ---")
+        print(f"Total Time Spent: {total_time_spent:.2f} seconds")
+        print(f"  - Row Wait Time: {row_wait_time:.2f} seconds")
+        print(f"  - Red Light Wait Time: {red_light_wait_time:.2f} seconds")
+        print(f"  - Crossing Time: {crossing_time:.2f} seconds")
+        print("------------------------------------------\n")
 
     def get_results(self):
         return {street: np.mean(times) if times else 0 for street, times in self.results.items()}
 
-# Main Simulation
 def run_simulation(scenarios):
     results = pd.DataFrame(columns=['Bakeri1', 'Bakeri2', 'Besat1', 'Besat2'])
     for scenario in scenarios:
         env = simpy.Environment()
         sim = IntersectionSimulation(env, LIGHT_TIMES[scenario], ARRIVAL_DISTRIBUTIONS)
         env.run(until=1000)
+
+        # Debugging: Inspect all collected results
+        print("\n--- Debug: Results Content ---")
+        for street, times in sim.results.items():
+            print(f"{street}: {times}")
+
         avg_results = sim.get_results()
         avg_results['Average'] = np.mean(list(avg_results.values()))
         avg_results['Bakeri Average'] = np.mean([avg_results['Bakeri1'], avg_results['Bakeri2']])
         results.loc[scenario] = avg_results
+
+        # Debug: Manual Averages
+        print("\n--- Debug: Manual Averages ---")
+        for street, times in sim.results.items():
+            if times:
+                manual_avg = np.mean(times)
+                print(f"{street}: {manual_avg:.2f} (Manual Average)")
     print("\nTraffic Simulation Results")
     print(results)
+
     return results
+
 
 LIGHT_TIMES = {
     3: {'green': {'Bakeri1': 40, 'Bakeri2': 30, 'Besat1': 25, 'Besat2': 25},
@@ -144,6 +181,7 @@ LIGHT_TIMES = {
     7: {'green': {'Bakeri1': 30, 'Bakeri2': 25, 'Besat1': 30, 'Besat2': 30},
         'red': {'Bakeri1': 85, 'Bakeri2': 90, 'Besat1': 85, 'Besat2': 85}},
 }
+
 
 if __name__ == "__main__":
     scenarios = [3]
