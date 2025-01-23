@@ -3,12 +3,11 @@
 import simpy
 import random
 import numpy as np
-import pandas as pd
 import tkinter as tk
 from tkinter import ttk
 
 # --------------------------------------------------
-# 1) SIMULATION CONSTANTS AND PROBABILITIES
+# 1) SIMULATION CONSTANTS & SETUP
 # --------------------------------------------------
 
 random.seed(1024)
@@ -60,66 +59,46 @@ LIGHT_TIMES = {
     3: {
         'green': {'Bakeri1': 40, 'Bakeri2': 30, 'Besat1': 25, 'Besat2': 25},
         'red':   {'Bakeri1': 80, 'Bakeri2': 90, 'Besat1': 95, 'Besat2': 95}
-    },
-    4: {
-        'green': {'Bakeri1': 40, 'Bakeri2': 35, 'Besat1': 30, 'Besat2': 25},
-        'red':   {'Bakeri1': 90, 'Bakeri2': 95, 'Besat1': 100, 'Besat2': 105}
-    },
-    7: {
-        'green': {'Bakeri1': 30, 'Bakeri2': 25, 'Besat1': 30, 'Besat2': 30},
-        'red':   {'Bakeri1': 85, 'Bakeri2': 90, 'Besat1': 85, 'Besat2': 85}
-    },
+    }
 }
 
 
 # --------------------------------------------------
-# 2) SIMULATION CLASS
+# 2) SIMULATION LOGIC
 # --------------------------------------------------
 
 class IntersectionSimulation:
     """
-    Simulates an intersection with four streets. Each street has 3 lanes and one traffic light.
-    Vehicles arrive with specific distributions, join a queue, wait for green, then cross.
+    A simplified intersection simulation where:
+      - 4 streets (Bakeri1, Bakeri2, Besat1, Besat2)
+      - Each street has 3 lanes (queues)
+      - Vehicles arrive stochastically, queue, then cross on green.
     """
-
     def __init__(self, env, light_times, arrival_distributions):
-        """
-        :param env: SimPy Environment
-        :param light_times: dict specifying green and red durations for each street
-        :param arrival_distributions: dict specifying vehicle inter-arrival distributions per street
-        """
         self.env = env
         self.light_times = light_times
         self.arrival_distributions = arrival_distributions
 
-        # Queues: For each street, we have 3 lanes: {1, 2, 3}
+        # Queues: for each street, we have lanes 1,2,3
         self.queues = {
             street: {1: [], 2: [], 3: []}
             for street in arrival_distributions
         }
-
-        # Light state for each street: True = Green, False = Red
+        # Light state: True=Green, False=Red
         self.light_state = {street: False for street in arrival_distributions}
-
-        # Track times for each street
         self.results = {street: [] for street in arrival_distributions}
-
         self.vehicle_count = 0
 
-        # Start traffic light cycle
+        # Start traffic lights
         self.env.process(self.traffic_light_cycle())
 
-        # Start vehicle arrival processes
+        # Start arrivals
         for street in arrival_distributions:
             self.env.process(self.vehicle_arrival(street))
 
     def traffic_light_cycle(self):
-        """
-        Rotates the green light among the streets. Each has a designated 'green' time.
-        After that, we switch it to red and move to the next street in cycle_order.
-        """
+        """Rotate which street is green according to the 'green' times in LIGHT_TIMES."""
         cycle_order = [(s, self.light_times['green'][s]) for s in self.light_times['green']]
-
         while True:
             for street, green_time in cycle_order:
                 self.light_state[street] = True
@@ -127,19 +106,14 @@ class IntersectionSimulation:
                 self.light_state[street] = False
 
     def vehicle_arrival(self, street):
-        """
-        Generates vehicles for a given street according to the arrival distribution.
-        """
+        """Generate vehicles for a given street."""
         while True:
-            # Wait for the next inter-arrival
             inter_arrival_time = self.arrival_distributions[street]()
             yield self.env.timeout(inter_arrival_time)
 
-            # Assign vehicle ID
             self.vehicle_count += 1
             vehicle_id = self.vehicle_count
 
-            # Determine direction (left, straight, right)
             direction = random.choices(
                 ['left', 'straight', 'right'],
                 weights=[
@@ -150,215 +124,280 @@ class IntersectionSimulation:
                 k=1
             )[0]
 
-            # Determine vehicle type
             vehicle_type = random.choices(
                 ['Bus', 'Car', 'Van', 'Pickup'],
                 weights=VEHICLE_PROBABILITIES[street],
                 k=1
             )[0]
 
-            # Simple logic to decide queue/lane:
-            # Use lanes 1 or 2 if direction is left or straight, else lane 3 for right turns
+            # Choose lane: lane1 or lane2 if left/straight, lane3 if right
             if direction in ["left", "straight"]:
-                # Put the vehicle in the lane with the shorter queue (lane1 or lane2)
-                lane1_len = len(self.queues[street][1])
-                lane2_len = len(self.queues[street][2])
-                queue_num = 1 if lane1_len <= lane2_len else 2
+                len1 = len(self.queues[street][1])
+                len2 = len(self.queues[street][2])
+                queue_num = 1 if len1 <= len2 else 2
             else:
                 queue_num = 3
 
-            # Start vehicle crossing process
             self.env.process(
                 self.vehicle_cross(street, vehicle_id, direction, queue_num, vehicle_type)
             )
 
     def vehicle_cross(self, street, vehicle_id, direction, queue_num, vehicle_type):
-        """
-        Simulates a single vehicle's travel through the intersection:
-          1) Wait in queue (row wait time).
-          2) Wait for green light (unless turning right).
-          3) Cross the intersection.
-        """
         arrival_time = self.env.now
-
-        # Position in the queue
         queue_position = len(self.queues[street][queue_num])
-        row_index = queue_position + 1  # 1-based index
+        row_index = queue_position + 1
 
-        # Time waiting to move from row_index N to the front (index 1)
-        row_wait_time = ((row_index - 1)
-                         * ROW_TIMES[street]
-                         * TIME_MODIFIERS[vehicle_type]['row_time'])
-
-        # Add vehicle to queue
+        row_wait_time = (row_index - 1) * ROW_TIMES[street] * TIME_MODIFIERS[vehicle_type]['row_time']
         self.queues[street][queue_num].append(vehicle_id)
 
-        # Wait that row time
         yield self.env.timeout(row_wait_time)
 
-        # If direction != 'right', must wait for green
         red_light_wait_time = 0
         if direction != 'right':
             while not self.light_state[street]:
                 yield self.env.timeout(1)
                 red_light_wait_time += 1
 
-        # Crossing time
-        crossing_time = (CROSSING_DISTRIBUTIONS[street]()
-                         * TIME_MODIFIERS[vehicle_type]['crossing_time'])
+        crossing_time = CROSSING_DISTRIBUTIONS[street]() * TIME_MODIFIERS[vehicle_type]['crossing_time']
         yield self.env.timeout(crossing_time)
 
-        # Remove vehicle from queue
         self.queues[street][queue_num].remove(vehicle_id)
-
-        total_time_spent = self.env.now - arrival_time
-        self.results[street].append(total_time_spent)
-
-        # Debug print (optional, remove or comment out to reduce console spam)
-        print(f"\n--- Vehicle {vehicle_id} Simulation ---")
-        print(f"Street: {street}")
-        print(f"Lane: {queue_num} | Row Index: {row_index}")
-        print(f"Direction: {direction}")
-        print(f"Vehicle Type: {vehicle_type}")
-        print(f"Row Wait Time: {row_wait_time:.2f} seconds")
-        print(f"Red Light Wait Time: {red_light_wait_time:.2f} seconds")
-        print(f"Crossing Time: {crossing_time:.2f} seconds")
-        print(f"Total Time Spent: {total_time_spent:.2f} seconds")
-        print("------------------------------------------\n")
+        total_time = self.env.now - arrival_time
+        self.results[street].append(total_time)
 
     def get_results(self):
-        """
-        :return: Dict of {street: avg_time_spent} across all vehicles for that street
-        """
         return {
             street: (np.mean(times) if times else 0)
             for street, times in self.results.items()
         }
 
-
 # --------------------------------------------------
-# 3) TKINTER-BASED GUI CLASS
+# 3) TKINTER CANVAS GUI
 # --------------------------------------------------
 
-class IntersectionGUI:
+class IntersectionCanvasGUI:
     """
-    A simple Tkinter GUI that runs the IntersectionSimulation step-by-step.
-    Displays each street's traffic light status and queue lengths.
+    A Canvas-based GUI that:
+      - Draws a stylized 4-way intersection with 3 lanes each side
+      - Shows color-coded traffic lights
+      - Displays simulation time
+      - Draws vehicle "dots" in each lane to indicate queue length
+      - Labels each street by name
     """
 
     def __init__(self, master, light_times, arrival_distributions, run_time=200):
-        """
-        :param master: The Tk root window.
-        :param light_times: Dictionary of light times (e.g., LIGHT_TIMES[3])
-        :param arrival_distributions: Dictionary of arrival distributions
-        :param run_time: How long (simpy time) to run the simulation
-        """
         self.master = master
-        self.master.title("Intersection Simulation")
+        self.master.title("Intersection Simulation with Vehicle Queues")
 
-        # Create SimPy environment and the simulation itself
+        # SimPy environment
         self.env = simpy.Environment()
         self.sim = IntersectionSimulation(self.env, light_times, arrival_distributions)
-
-        # We'll stop stepping once self.env.now >= run_time
         self.run_time = run_time
 
-        # Create Tkinter labels to show state
-        self.street_labels = {}  # for traffic lights
-        self.lane_labels = {}    # for lane queue lengths
-        self.setup_gui()
+        # Top frame: time display
+        top_frame = ttk.Frame(master)
+        top_frame.pack(side=tk.TOP, fill=tk.X)
+        self.time_label = ttk.Label(top_frame, text="Time: 0.0", font=("TkDefaultFont", 12, "bold"))
+        self.time_label.pack(side=tk.LEFT, padx=10, pady=5)
 
-        # Start stepping the simulation
+        # Canvas for intersection
+        self.canvas = tk.Canvas(master, width=600, height=600, bg="white")
+        self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # Draw static geometry (roads, lane dividers, street names)
+        self.draw_static_intersection()
+        self.draw_street_names()
+
+        # Place traffic lights (circles on canvas)
+        self.light_shapes = {}
+        self.draw_lights()
+
+        # We'll store references to vehicle "dots" so we can remove/redraw
+        self.vehicle_shapes = []
+
+        # Begin simulation stepping
         self.step_simulation()
 
-    def setup_gui(self):
+    # ---------- Drawing the roads and text ----------
+
+    def draw_static_intersection(self):
+        """Draw wide gray roads for Bakeri1 (top), Bakeri2 (bottom), Besat1 (left), Besat2 (right)."""
+        # Intersection center ~ (300,300), each road about 100 px wide
+
+        # Bakeri1 top road
+        self.canvas.create_rectangle(250, 0, 350, 300, fill="lightgray")
+        self.draw_lane_dividers_vertical(x_center=300, y_start=0, y_end=300)
+
+        # Bakeri2 bottom road
+        self.canvas.create_rectangle(250, 300, 350, 600, fill="lightgray")
+        self.draw_lane_dividers_vertical(x_center=300, y_start=300, y_end=600)
+
+        # Besat1 left road
+        self.canvas.create_rectangle(0, 250, 300, 350, fill="lightgray")
+        self.draw_lane_dividers_horizontal(y_center=300, x_start=0, x_end=300)
+
+        # Besat2 right road
+        self.canvas.create_rectangle(300, 250, 600, 350, fill="lightgray")
+        self.draw_lane_dividers_horizontal(y_center=300, x_start=300, x_end=600)
+
+    def draw_lane_dividers_vertical(self, x_center, y_start, y_end):
         """
-        Builds all the label widgets to display the queue lengths & light states.
+        Draw dashed white lane dividers for a vertical road.
+        We'll make multiple lines offset from center.
         """
-        row_idx = 0
-        for street in self.sim.arrival_distributions.keys():
-            frame = ttk.LabelFrame(self.master, text=street, padding=10)
-            frame.grid(row=row_idx, column=0, padx=10, pady=10, sticky="ew")
+        offsets = [10, 20, 30, 40, 50]
+        for off in offsets:
+            # Left side
+            x = x_center - off
+            self.canvas.create_line(x, y_start, x, y_end, fill="white", dash=(5,2))
+            # Right side
+            x2 = x_center + off
+            self.canvas.create_line(x2, y_start, x2, y_end, fill="white", dash=(5,2))
 
-            # Traffic light label
-            light_label = ttk.Label(frame, text="Light: RED", foreground="red",
-                                    font=("TkDefaultFont", 10, "bold"))
-            light_label.grid(row=0, column=0, padx=5, pady=5, sticky="w")
-            self.street_labels[street] = light_label
+    def draw_lane_dividers_horizontal(self, y_center, x_start, x_end):
+        """
+        Draw dashed white lane dividers for a horizontal road.
+        """
+        offsets = [10, 20, 30, 40, 50]
+        for off in offsets:
+            # Up side
+            y = y_center - off
+            self.canvas.create_line(x_start, y, x_end, y, fill="white", dash=(5,2))
+            # Down side
+            y2 = y_center + off
+            self.canvas.create_line(x_start, y2, x_end, y2, fill="white", dash=(5,2))
 
-            # Lane labels
-            for lane in range(1, 4):
-                lbl = ttk.Label(frame, text=f"Lane {lane} queue: 0")
-                lbl.grid(row=lane, column=0, padx=5, pady=2, sticky="w")
-                self.lane_labels[(street, lane)] = lbl
+    def draw_street_names(self):
+        """
+        Label each street near the road approach.
+        """
+        # Bakeri1 => top
+        self.canvas.create_text(300, 30, text="Bakeri1", fill="black", font=("Arial", 14, "bold"))
+        # Bakeri2 => bottom
+        self.canvas.create_text(300, 570, text="Bakeri2", fill="black", font=("Arial", 14, "bold"))
+        # Besat1 => left (rotate text 90 deg if desired)
+        self.canvas.create_text(30, 300, text="Besat1", fill="black", font=("Arial", 14, "bold"), angle=90)
+        # Besat2 => right
+        self.canvas.create_text(570, 300, text="Besat2", fill="black", font=("Arial", 14, "bold"), angle=-90)
 
-            row_idx += 1
+    # ---------- Drawing traffic lights and vehicles ----------
+
+    def draw_lights(self):
+        """
+        Draw small circles indicating traffic lights for each street.
+        We'll place them near the intersection.
+        """
+        r = 10
+        # Bakeri1 => top
+        top_light = self.canvas.create_oval(290, 40, 310, 60, fill="red")
+        self.light_shapes['Bakeri1'] = top_light
+
+        # Bakeri2 => bottom
+        bottom_light = self.canvas.create_oval(290, 540, 310, 560, fill="red")
+        self.light_shapes['Bakeri2'] = bottom_light
+
+        # Besat1 => left
+        left_light = self.canvas.create_oval(40, 290, 60, 310, fill="red")
+        self.light_shapes['Besat1'] = left_light
+
+        # Besat2 => right
+        right_light = self.canvas.create_oval(540, 290, 560, 310, fill="red")
+        self.light_shapes['Besat2'] = right_light
+
+    # For placing vehicle "dots" in each lane, define offsets:
+    # Each dictionary entry => (x_start, y_start, dx, dy)
+    # so we can position each queued vehicle by index i.
+    # This is just an approximate layout for demonstration.
+    lane_positions = {
+        # Bakeri1 => top approach, going down. 3 lanes side-by-side
+        ('Bakeri1', 1): (280, 100, 0, -10),  # left lane, stack upward behind
+        ('Bakeri1', 2): (300, 100, 0, -10),  # middle lane
+        ('Bakeri1', 3): (320, 100, 0, -10),  # right lane
+
+        # Bakeri2 => bottom approach, going up
+        ('Bakeri2', 1): (280, 500, 0, 10),   # left lane, stack downward
+        ('Bakeri2', 2): (300, 500, 0, 10),
+        ('Bakeri2', 3): (320, 500, 0, 10),
+
+        # Besat1 => left approach, going right
+        ('Besat1', 1): (100, 280, -10, 0),
+        ('Besat1', 2): (100, 300, -10, 0),
+        ('Besat1', 3): (100, 320, -10, 0),
+
+        # Besat2 => right approach, going left
+        ('Besat2', 1): (500, 280, 10, 0),
+        ('Besat2', 2): (500, 300, 10, 0),
+        ('Besat2', 3): (500, 320, 10, 0),
+    }
+
+    # --------------------------------------------------
+    # 4) SIMULATION LOOP
+    # --------------------------------------------------
 
     def step_simulation(self):
-        """
-        Advance the simulation by one event and update the GUI.
-        Schedule the next step if run_time not exceeded and events remain.
-        """
+        """Step the simulation in small increments, update GUI each time."""
         if self.env.now >= self.run_time:
-            # Simulation time is up
             return
-
         try:
-            # Advance the simulation by the next event
-            self.env.step()
+            self.env.step()  # one event
         except simpy.core.EmptySchedule:
-            # No more events in the queue
             return
 
-        # Update Tk labels with the current simulation state
         self.update_gui()
-
-        # Schedule another step in 100 ms (real time)
+        # Update every 50 ms in real time
         self.master.after(10, self.step_simulation)
 
     def update_gui(self):
-        """
-        Refresh traffic light labels and queue length labels.
-        """
-        # Update traffic lights
+        """Redraw time display, traffic lights, and vehicle queues."""
+        current_time = self.env.now
+        self.time_label.config(text=f"Time: {current_time:.1f}")
+
+        # Update light colors
         for street, is_green in self.sim.light_state.items():
-            if is_green:
-                self.street_labels[street].config(text="Light: GREEN", foreground="green")
-            else:
-                self.street_labels[street].config(text="Light: RED", foreground="red")
+            shape_id = self.light_shapes[street]
+            self.canvas.itemconfig(shape_id, fill=("green" if is_green else "red"))
 
-        # Update queue lengths
-        for street, lanes_dict in self.sim.queues.items():
-            for lane_num, queue_list in lanes_dict.items():
-                q_len = len(queue_list)
-                self.lane_labels[(street, lane_num)].config(
-                    text=f"Lane {lane_num} queue: {q_len}"
-                )
+        # Clear old vehicle shapes
+        for shape_id in self.vehicle_shapes:
+            self.canvas.delete(shape_id)
+        self.vehicle_shapes.clear()
 
+        # Draw a small square for each vehicle in each queue
+        # The queue order is from front to back, so index i=0 is front.
+        # We'll just space them out along the approach with an offset.
+        for street, lane_dict in self.sim.queues.items():
+            for lane_num, queue_list in lane_dict.items():
+                # (x_start, y_start, dx, dy) for lane
+                if (street, lane_num) not in self.lane_positions:
+                    continue
+                x0, y0, dx, dy = self.lane_positions[(street, lane_num)]
+
+                # For each vehicle in the queue, place a small 6x6 box
+                for i, vehicle_id in enumerate(queue_list):
+                    # offset from start pos
+                    xx = x0 + i * dx
+                    yy = y0 + i * dy
+                    size = 3  # half-size => 6x6 box
+                    shape_id = self.canvas.create_rectangle(
+                        xx - size, yy - size, xx + size, yy + size,
+                        fill="blue", outline=""
+                    )
+                    self.vehicle_shapes.append(shape_id)
 
 # --------------------------------------------------
-# 4) MAIN FUNCTION TO LAUNCH THE GUI
+# 5) MAIN
 # --------------------------------------------------
 
 def main():
-    """
-    Runs the simulation scenario with a Tkinter GUI. After the GUI closes,
-    prints the average time spent per street.
-    """
-    # Choose one scenario (3, 4, or 7) from LIGHT_TIMES
-    scenario = 3
-
     root = tk.Tk()
-    app = IntersectionGUI(root, LIGHT_TIMES[scenario], ARRIVAL_DISTRIBUTIONS, run_time=200)
+    scenario = 3  # we have only 3 in LIGHT_TIMES as an example
+    app = IntersectionCanvasGUI(root, LIGHT_TIMES[scenario], ARRIVAL_DISTRIBUTIONS, run_time=1000)
     root.mainloop()
 
-    # Once the GUI is closed, we can retrieve & print simulation results
     results = app.sim.get_results()
-    print("\nSimulation complete.")
-    print("Average time spent (by street):")
+    print("Simulation ended.")
     for street, avg_time in results.items():
-        print(f"  {street}: {avg_time:.2f} seconds")
-
+        print(f"{street} average time = {avg_time:.2f} sec")
 
 if __name__ == "__main__":
     main()
