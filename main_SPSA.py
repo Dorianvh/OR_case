@@ -57,6 +57,7 @@ THRESHOLDS = {
     'Besat2': 25,
 }
 
+
 # SPSA Parameters
 T = 10000  # Total iterations
 epsilon = 0.1  # Learning rate
