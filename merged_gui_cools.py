@@ -411,7 +411,7 @@ class IntersectionCanvasGUI:
 # --------------------------------------------------
 
 class SPSAOptimizer:
-    def __init__(self, sim_class, initial_theta, a=0.01, c=0.01, alpha=0, gamma=0, max_iter=1000):
+    def __init__(self, sim_class, initial_theta, a=0.1, c=0.1, alpha=0, gamma=0, max_iter=1000):
         self.sim_class = sim_class
         self.theta = initial_theta
         self.a = a
@@ -489,7 +489,7 @@ class SPSAOptimizer:
 # 6) MAIN
 # --------------------------------------------------
 def main():
-    initial_theta = [10]  # Initial guess for THRESHOLD
+    initial_theta = [15]  # Initial guess for THRESHOLD
     optimizer = SPSAOptimizer(IntersectionSimulation, initial_theta)
     optimal_theta = optimizer.optimize()
     print(f"Optimal THRESHOLD: {optimal_theta[0]}")
