@@ -90,6 +90,8 @@ class IntersectionSimulation:
         self.light_state = {street: False for street in arrival_distributions}
         self.results = {street: [] for street in arrival_distributions}
         self.vehicle_count = 0
+        self.average_time = 0
+
 
         self.env.process(self.traffic_light_cycle())
 
@@ -177,6 +179,11 @@ class IntersectionSimulation:
         self.queues[street][queue_num].remove(vehicle_id)
         total_time = self.env.now - arrival_time
         self.results[street].append(total_time)
+
+    def get_average_time(self):
+        total_times = [time for times in self.results.values() for time in times]
+        self.average_time = np.mean(total_times) if total_times else 0
+        return self.average_time
 
     def get_results(self):
         return {
@@ -407,10 +414,13 @@ def main():
     app = IntersectionCanvasGUI(root, LIGHT_TIMES[scenario], ARRIVAL_DISTRIBUTIONS, run_time=1000)
     root.mainloop()
 
-    results = app.sim.get_results()
+
     print("Simulation ended.")
+    results = app.sim.get_results()
     for street, avg_time in results.items():
         print(f"{street} average time = {avg_time:.2f} sec")
+
+    print(f"Total average time = {app.sim.get_average_time():.2f} sec")
 
 if __name__ == "__main__":
     main()
