@@ -17,7 +17,7 @@ np.random.seed(1832)
 # SOTL PARAMETERS
 # -----------------------------
 # Tune these to match the paper's recommendations or experiment:
-THRESHOLD = 10  # θ
+THRESHOLD = 5  # θ
 PHI_MIN = 5     # minimum green phase
 OMEGA = 5       # distance to detect a crossing platoon (simplified: see below)
 MU = 8          # break large platoons if > MU cars waiting on red
@@ -45,10 +45,10 @@ DIRECTION_PROBABILITIES = {
 }
 
 CROSSING_DISTRIBUTIONS = {
-    'Bakeri1': lambda: np.random.poisson(8.21),
-    'Bakeri2': lambda: np.random.normal(5.66, 2.08),
-    'Besat1': lambda: min(10, 2.5 + np.random.lognormal(7.65, 6.42)),
-    'Besat2': lambda: 2.5 + np.random.exponential(2.82),
+    'Bakeri1': lambda: max(0.1, np.random.poisson(8.21)),
+    'Bakeri2': lambda: max(0.1, np.random.normal(5.66, 2.08)),
+    'Besat1': lambda: max(0.1, min(10, 2.5 + np.random.lognormal(7.65, 6.42))),
+    'Besat2': lambda: max(0.1, 2.5 + np.random.exponential(2.82)),
 }
 
 ARRIVAL_DISTRIBUTIONS = {
@@ -97,53 +97,19 @@ class IntersectionSimulation:
             self.env.process(self.vehicle_arrival(street))
 
     def traffic_light_cycle(self):
-        THRESHOLD = 10
-        PHI_MIN = 5
-        OMEGA = 5
-        MU = 8
-
-        self.current_green = list(self.light_state.keys())[0]
-        for street in self.light_state:
-            self.light_state[street] = (street == self.current_green)
-
-        self.time_since_green = 0
-        self.sotl_counters = {street: 0 for street in self.light_state}
-
+        """Set Bakeri1 to green initially and switch to other streets based on queue length."""
+        self.light_state['Bakeri1'] = True
         while True:
+            for street, lanes in self.queues.items():
+                total_queue_length = sum(len(queue) for queue in lanes.values())
+                if total_queue_length >= THRESHOLD:
+                    self.light_state = {s: False for s in self.light_state}
+                    self.light_state[street] = True
+                    while sum(len(queue) for queue in self.queues[street].values()) >= THRESHOLD:
+                        yield self.env.timeout(PHI_MIN)
+
             yield self.env.timeout(1)
-            self.time_since_green += 1
 
-            for street in self.light_state:
-                if street == self.current_green:
-                    self.sotl_counters[street] = 0
-                else:
-                    total_vehicles = sum(len(queue) for queue in self.queues[street].values())
-                    self.sotl_counters[street] += total_vehicles
-
-            candidate = None
-            for street in self.light_state:
-                if street != self.current_green and self.sotl_counters[street] >= THRESHOLD:
-                    candidate = street
-                    break
-
-            if candidate is not None and self.time_since_green >= PHI_MIN:
-                if self.should_switch(candidate, MU, OMEGA):
-                    self.light_state[self.current_green] = False
-                    self.light_state[candidate] = True
-                    self.current_green = candidate
-                    self.time_since_green = 0
-                    self.sotl_counters[candidate] = 0
-
-    def should_switch(self, new_street, MU, OMEGA):
-        waiting_new = sum(len(queue) for queue in self.queues[new_street].values())
-        if waiting_new > MU:
-            return True
-
-        crossing_green = sum(len(queue) for queue in self.queues[self.current_green].values())
-        if crossing_green > 0:
-            return False
-
-        return True
 
     def vehicle_arrival(self, street):
         """Generate vehicles for a given street."""
@@ -385,7 +351,7 @@ class IntersectionCanvasGUI:
 
         self.update_gui()
         # Update every 50 ms in real time
-        self.master.after(1, self.step_simulation)
+        self.master.after(10, self.step_simulation)
 
     def update_gui(self):
         """Redraw time display, traffic lights, and vehicle queues."""
