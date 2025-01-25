@@ -16,7 +16,7 @@ np.random.seed(1832)
 # -----------------------------
 # SOTL PARAMETERS
 # -----------------------------
-# Tune these to match the paper's recommendations or experiment:
+
 THRESHOLD = 5  # θ
 PHI_MIN = 5     # minimum green phase
 OMEGA = 5       # distance to detect a crossing platoon (simplified: see below)
@@ -101,12 +101,19 @@ class IntersectionSimulation:
         self.light_state['Bakeri1'] = True
         while True:
             for street, lanes in self.queues.items():
+                # Check if total queue length (sum of all lanes in a street) exceeds threshold
                 total_queue_length = sum(len(queue) for queue in lanes.values())
+
                 if total_queue_length >= THRESHOLD:
+                    # Turn all lights red
                     self.light_state = {s: False for s in self.light_state}
+                    # Set the current street light to green
                     self.light_state[street] = True
-                    while sum(len(queue) for queue in self.queues[street].values()) >= THRESHOLD:
-                        yield self.env.timeout(PHI_MIN)
+                    # Ensure the green light stays on for at least PHI_MIN seconds
+                    green_light_time = 0
+                    while sum(len(queue) for queue in self.queues[street].values()) >= THRESHOLD or green_light_time < PHI_MIN:
+                        yield self.env.timeout(1)
+                        green_light_time += 1
 
             yield self.env.timeout(1)
 
