@@ -1,5 +1,4 @@
-#!/usr/bin/env python
-
+import matplotlib.pyplot as plt
 import simpy
 import random
 import numpy as np
@@ -190,6 +189,9 @@ class IntersectionSimulation:
             street: (np.mean(times) if times else 0)
             for street, times in self.results.items()
         }
+
+    def spsa(self):
+        print()
 
 # --------------------------------------------------
 # 3) TKINTER CANVAS GUI
@@ -405,10 +407,95 @@ class IntersectionCanvasGUI:
                     self.vehicle_shapes.append(shape_id)
 
 # --------------------------------------------------
-# 5) MAIN
+# 5) SPSA OPTIMIZATION
 # --------------------------------------------------
 
+class SPSAOptimizer:
+    def __init__(self, sim_class, initial_theta, a=0.01, c=0.01, alpha=0, gamma=0, max_iter=1000):
+        self.sim_class = sim_class
+        self.theta = initial_theta
+        self.a = a
+        self.c = c
+        self.alpha = alpha
+        self.gamma = gamma
+        self.max_iter = max_iter
+        self.theta_history = []
+        self.loss_history = []
+
+    def optimize(self):
+        ak = self.a / (np.arange(1, self.max_iter + 1) ** self.alpha)
+        ck = self.c / (np.arange(1, self.max_iter + 1) ** self.gamma)
+
+        for k in range(self.max_iter):
+            delta = 2 * np.random.randint(2, size=len(self.theta)) - 1
+            theta_plus = self.theta + ck[k] * delta
+            theta_minus = self.theta - ck[k] * delta
+
+            # Evaluate the loss for theta_plus and theta_minus
+            loss_plus = self.evaluate(theta_plus)
+            loss_minus = self.evaluate(theta_minus)
+
+            # Compute the gradient estimate
+            gk = (loss_plus - loss_minus) / (2 * ck[k] * delta)
+
+            # Update theta
+            self.theta = np.maximum(0.1, self.theta - ak[k] * gk)
+
+            # Store the current theta and loss
+            self.theta_history.append(self.theta.copy())
+            self.loss_history.append(self.evaluate(self.theta))
+
+            # Print the current iteration, theta, and loss
+            print(f"Iteration {k+1}/{self.max_iter}, theta: {self.theta}, loss: {self.loss_history[-1]}")
+
+        return self.theta
+
+    def evaluate(self, theta):
+        global THRESHOLD
+        THRESHOLD = theta[0]
+        env = simpy.Environment()
+        sim = self.sim_class(env, LIGHT_TIMES[3], ARRIVAL_DISTRIBUTIONS)
+        env.run(until=3600)
+        average_time = sim.get_average_time()
+
+        # Print the evaluated theta and the resulting average time
+        print(f"Evaluating theta: {theta}, average time: {average_time}")
+
+        return average_time
+
+    def plot_results(self):
+        # Plot theta over iterations
+        plt.figure(figsize=(12, 6))
+        plt.subplot(1, 2, 1)
+        plt.plot(self.theta_history)
+        plt.xlabel('Iteration')
+        plt.ylabel('Theta')
+        plt.title('Theta over Iterations')
+
+        # Plot loss over iterations
+        plt.subplot(1, 2, 2)
+        plt.plot(self.loss_history)
+        plt.xlabel('Iteration')
+        plt.ylabel('Loss')
+        plt.title('Loss over Iterations')
+
+        plt.tight_layout()
+        plt.show()
+
+
+
+
+# --------------------------------------------------
+# 6) MAIN
+# --------------------------------------------------
 def main():
+    initial_theta = [10]  # Initial guess for THRESHOLD
+    optimizer = SPSAOptimizer(IntersectionSimulation, initial_theta)
+    optimal_theta = optimizer.optimize()
+    print(f"Optimal THRESHOLD: {optimal_theta[0]}")
+    optimizer.plot_results()
+
+def main2():
     root = tk.Tk()
     scenario = 3  # we have only 3 in LIGHT_TIMES as an example
     app = IntersectionCanvasGUI(root, LIGHT_TIMES[scenario], ARRIVAL_DISTRIBUTIONS, run_time=1000)
