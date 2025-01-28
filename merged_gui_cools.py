@@ -405,7 +405,7 @@ class IntersectionCanvasGUI:
 # --------------------------------------------------
 
 class SPSAOptimizer:
-    def __init__(self, sim_class, initial_theta, a=0.1, c=0.1, alpha=0, gamma=0, max_iter=1000):
+    def __init__(self, sim_class, initial_theta, a=0.05, c=0.05, alpha=0, gamma=0, max_iter=500):
         self.sim_class = sim_class
         self.theta = initial_theta
         self.a = a
@@ -433,7 +433,7 @@ class SPSAOptimizer:
             gk = (loss_plus - loss_minus) / (2 * ck[k] * delta)
 
             # Update theta with a lower bound of 0
-            self.theta = np.maximum(0, self.theta - ak[k] * gk)
+            self.theta = np.maximum(2, self.theta - ak[k] * gk)
 
             # Store the current theta and loss
             self.theta_history.append(self.theta.copy())
