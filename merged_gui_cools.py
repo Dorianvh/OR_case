@@ -432,8 +432,8 @@ class SPSAOptimizer:
             # Compute the gradient estimate
             gk = (loss_plus - loss_minus) / (2 * ck[k] * delta)
 
-            # Update theta with a lower bound of 1
-            self.theta = np.maximum(1, self.theta - ak[k] * gk)
+            # Update theta with a lower bound of 0
+            self.theta = np.maximum(0, self.theta - ak[k] * gk)
 
             # Store the current theta and loss
             self.theta_history.append(self.theta.copy())
