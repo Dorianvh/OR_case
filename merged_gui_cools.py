@@ -77,10 +77,11 @@ LIGHT_TIMES = {
 # --------------------------------------------------
 
 class IntersectionSimulation:
-    def __init__(self, env, light_times, arrival_distributions):
+    def __init__(self, env, light_times, arrival_distributions, thresholds):
         self.env = env
         self.light_times = light_times
         self.arrival_distributions = arrival_distributions
+        self.thresholds = thresholds
 
         self.queues = {
             street: {1: [], 2: [], 3: []}
@@ -90,7 +91,6 @@ class IntersectionSimulation:
         self.results = {street: [] for street in arrival_distributions}
         self.vehicle_count = 0
         self.average_time = 0
-
 
         self.env.process(self.traffic_light_cycle())
 
@@ -105,79 +105,73 @@ class IntersectionSimulation:
                 # Check if total queue length (sum of all lanes in a street) exceeds threshold
                 total_queue_length = sum(len(queue) for queue in lanes.values())
 
-                if total_queue_length >= THRESHOLD:
+                if total_queue_length >= self.thresholds[street]:
                     # Turn all lights red
                     self.light_state = {s: False for s in self.light_state}
                     # Set the current street light to green
                     self.light_state[street] = True
                     # Ensure the green light stays on for at least PHI_MIN seconds
                     green_light_time = 0
-                    while sum(len(queue) for queue in self.queues[street].values()) >= THRESHOLD or green_light_time < PHI_MIN:
+                    while sum(len(queue) for queue in self.queues[street].values()) >= self.thresholds[street] or green_light_time < PHI_MIN:
                         yield self.env.timeout(1)
                         green_light_time += 1
 
             yield self.env.timeout(1)
 
-
     def vehicle_arrival(self, street):
-        """Generate vehicles for a given street."""
         while True:
             inter_arrival_time = self.arrival_distributions[street]()
             yield self.env.timeout(inter_arrival_time)
-
             self.vehicle_count += 1
             vehicle_id = self.vehicle_count
 
-            direction = random.choices(
-                ['left', 'straight', 'right'],
-                weights=[
-                    DIRECTION_PROBABILITIES[street]['left'],
-                    DIRECTION_PROBABILITIES[street]['straight'],
-                    DIRECTION_PROBABILITIES[street]['right']
-                ],
-                k=1
-            )[0]
+            direction = random.choices(['left', 'straight', 'right'], weights=[
+                DIRECTION_PROBABILITIES[street]['left'],
+                DIRECTION_PROBABILITIES[street]['straight'],
+                DIRECTION_PROBABILITIES[street]['right']
+            ])[0]
 
-            vehicle_type = random.choices(
-                ['Bus', 'Car', 'Van', 'Pickup'],
-                weights=VEHICLE_PROBABILITIES[street],
-                k=1
-            )[0]
+            vehicle_type = random.choices(['Bus', 'Car', 'Van', 'Pickup'], weights=VEHICLE_PROBABILITIES[street])[0]
 
-            # Choose lane: lane1 or lane2 if left/straight, lane3 if right
             if direction in ["left", "straight"]:
-                len1 = len(self.queues[street][1])
-                len2 = len(self.queues[street][2])
-                queue_num = 1 if len1 <= len2 else 2
+                queue_num = 1 if len(self.queues[street][1]) <= len(self.queues[street][2]) else 2
             else:
                 queue_num = 3
 
-            self.env.process(
-                self.vehicle_cross(street, vehicle_id, direction, queue_num, vehicle_type)
-            )
+            self.env.process(self.vehicle_cross(street, vehicle_id, direction, queue_num, vehicle_type))
+
 
     def vehicle_cross(self, street, vehicle_id, direction, queue_num, vehicle_type):
         arrival_time = self.env.now
-        queue_position = len(self.queues[street][queue_num])
+        queue_position = len(self.queues[street][queue_num])  # Vehicle's position in queue
         row_index = queue_position + 1
-
         row_wait_time = (row_index - 1) * ROW_TIMES[street] * TIME_MODIFIERS[vehicle_type]['row_time']
+
+        # Add vehicle to queue
         self.queues[street][queue_num].append(vehicle_id)
+        yield self.env.timeout(row_wait_time)  # Wait time to move to the first row
 
-        yield self.env.timeout(row_wait_time)
-
+        # Wait for green light if not turning right
         red_light_wait_time = 0
         if direction != 'right':
             while not self.light_state[street]:
+
                 yield self.env.timeout(1)
                 red_light_wait_time += 1
-
+        else:
+            if not self.light_state[street]:  # If red light but turning right
+                pass
+        # Calculate crossing time
         crossing_time = CROSSING_DISTRIBUTIONS[street]() * TIME_MODIFIERS[vehicle_type]['crossing_time']
         yield self.env.timeout(crossing_time)
 
+        # Remove vehicle from queue
         self.queues[street][queue_num].remove(vehicle_id)
-        total_time = self.env.now - arrival_time
-        self.results[street].append(total_time)
+        total_time_spent = self.env.now - arrival_time
+
+        # Record total time
+        self.results[street].append(total_time_spent)
+
 
     def get_average_time(self):
         total_times = [time for times in self.results.values() for time in times]
@@ -438,8 +432,8 @@ class SPSAOptimizer:
             # Compute the gradient estimate
             gk = (loss_plus - loss_minus) / (2 * ck[k] * delta)
 
-            # Update theta
-            self.theta = np.maximum(0.1, self.theta - ak[k] * gk)
+            # Update theta with a lower bound of 1
+            self.theta = np.maximum(1, self.theta - ak[k] * gk)
 
             # Store the current theta and loss
             self.theta_history.append(self.theta.copy())
@@ -451,10 +445,14 @@ class SPSAOptimizer:
         return self.theta
 
     def evaluate(self, theta):
-        global THRESHOLD
-        THRESHOLD = theta[0]
+        thresholds = {
+            'Bakeri1': theta[0],
+            'Bakeri2': theta[1],
+            'Besat1': theta[2],
+            'Besat2': theta[3]
+        }
         env = simpy.Environment()
-        sim = self.sim_class(env, LIGHT_TIMES[3], ARRIVAL_DISTRIBUTIONS)
+        sim = self.sim_class(env, LIGHT_TIMES[3], ARRIVAL_DISTRIBUTIONS, thresholds)
         env.run(until=3600)
         average_time = sim.get_average_time()
 
@@ -489,10 +487,10 @@ class SPSAOptimizer:
 # 6) MAIN
 # --------------------------------------------------
 def main():
-    initial_theta = [15]  # Initial guess for THRESHOLD
+    initial_theta = [15, 15, 15, 15]  # Initial guess for thresholds for each street
     optimizer = SPSAOptimizer(IntersectionSimulation, initial_theta)
     optimal_theta = optimizer.optimize()
-    print(f"Optimal THRESHOLD: {optimal_theta[0]}")
+    print(f"Optimal THRESHOLDS: {optimal_theta}")
     optimizer.plot_results()
 
 def main2():
